@@ -431,7 +431,7 @@ class TracktorMenu:
         self.log_message(f"Starting tracking for video: {video_path}")
         
         # Build command based on current settings
-        cmd = ["./run_tracker.sh"]
+        cmd = ["bash run_tracker.sh"]
         
         # Add device
         cmd.extend(["--device", self.device.get()])
@@ -471,7 +471,7 @@ class TracktorMenu:
         self.log_message(f"Starting tracking for sequence: {sequence}")
         
         # Build command based on current settings
-        cmd = ["./run_tracker.sh"]
+        cmd = ["bash run_tracker.sh"]
         
         # Add device
         cmd.extend(["--device", self.device.get()])
