@@ -121,7 +121,7 @@ def calculate_iou(box1, box2):
     return iou
 
 
-def associate_detections_to_tracks(prev_tracks, curr_boxes, curr_features, iou_threshold=0.3, device='cpu'):
+def associate_detections_to_tracks2(prev_tracks, curr_boxes, curr_features, iou_threshold=0.3, device='cpu'):
     """
     Associate detections to existing tracks using appearance and spatial information
 
@@ -204,6 +204,115 @@ def associate_detections_to_tracks(prev_tracks, curr_boxes, curr_features, iou_t
     return assignments, unmatched_tracks, unmatched_detections
 
 
+import torch
+import torch.nn.functional as F
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+from torchvision.ops import box_iou
+
+
+def associate_detections_to_tracks(
+    prev_tracks,
+    curr_boxes,
+    curr_features,
+    iou_threshold=0.3,
+    cost_threshold=0.7,
+    feature_weight=0.7,
+    age_weight=0.1,
+    max_age=100,
+    return_cost_matrix=False,
+    device='cpu'
+):
+    """
+    Associate detections to existing tracks using appearance, spatial, and temporal (age) information.
+
+    Args:
+        prev_tracks (list): List of previous tracks, each as dict with keys 'box', 'feature', and 'age'.
+        curr_boxes (Tensor): Current bounding boxes [N, 4].
+        curr_features (Tensor): Current feature embeddings [N, feature_dim].
+        iou_threshold (float): Minimum IoU for a valid match.
+        cost_threshold (float): Max allowed total cost for a match.
+        feature_weight (float): Weight for appearance cost (0 to 1).
+        age_weight (float): Weight for age penalty (0 to 1).
+        max_age (int): Maximum age to normalize aging penalty.
+        return_cost_matrix (bool): Whether to return the cost matrix.
+        device (str): Torch device ('cpu' or 'cuda').
+
+    Returns:
+        assignments (list of (track_idx, detection_idx))
+        unmatched_tracks (list of indices)
+        unmatched_detections (list of indices)
+        cost_matrix (optional)
+    """
+    if len(prev_tracks) == 0:
+        return [], [], list(range(len(curr_boxes)))
+
+    if len(curr_boxes) == 0:
+        return [], list(range(len(prev_tracks))), []
+
+    prev_features_list = []
+    prev_boxes = []
+    track_ages = []
+
+    for idx, t in enumerate(prev_tracks):
+        try:
+            feat = t['feature']
+            feat_tensor = feat if isinstance(feat, torch.Tensor) else torch.tensor(feat, device=device)
+            prev_features_list.append(feat_tensor)
+            prev_boxes.append(t['box'])
+            track_ages.append(t.get('age', 0))
+        except Exception as e:
+            print(f"[Warning] Failed to process track {idx}: {e}")
+            prev_features_list.append(torch.zeros_like(curr_features[0]))
+            prev_boxes.append(torch.tensor([0, 0, 1, 1], device=device))
+            track_ages.append(max_age)
+
+    prev_features = torch.stack(prev_features_list).to(device)
+    prev_boxes = torch.stack(prev_boxes).to(device)
+    curr_boxes = curr_boxes.to(device)
+    curr_features = curr_features.to(device)
+
+    # Normalize features
+    """prev_features = F.normalize(prev_features, p=2, dim=1)
+    curr_features = F.normalize(curr_features, p=2, dim=1)"""
+
+    # Cosine similarity cost
+    feature_sim = torch.mm(prev_features, curr_features.t()).cpu().numpy()
+    feature_cost = 1.0 - feature_sim
+
+    # IoU cost
+    iou_matrix = box_iou(prev_boxes, curr_boxes).cpu().numpy()
+    iou_cost = 1.0 - iou_matrix
+
+    # Age cost
+    age_array = np.array(track_ages).reshape(-1, 1)  # Shape: [num_tracks, 1]
+    age_cost = (age_array / max_age)  # Normalize [0, 1]
+
+    # Combined cost
+    base_cost = feature_weight * feature_cost + (1.0 - feature_weight) * iou_cost
+    total_cost = base_cost + age_weight * age_cost
+
+    # Hungarian matching
+    row_indices, col_indices = linear_sum_assignment(total_cost)
+
+    assignments = []
+    unmatched_tracks = list(range(len(prev_tracks)))
+    unmatched_detections = list(range(len(curr_boxes)))
+
+    for row, col in zip(row_indices, col_indices):
+        if total_cost[row, col] < cost_threshold and iou_matrix[row, col] > iou_threshold:
+            assignments.append((row, col))
+            if row in unmatched_tracks:
+                unmatched_tracks.remove(row)
+            if col in unmatched_detections:
+                unmatched_detections.remove(col)
+
+    if return_cost_matrix:
+        return assignments, unmatched_tracks, unmatched_detections, total_cost
+    else:
+        return assignments, unmatched_tracks, unmatched_detections
+
+
 def process_video_input(args, model, device):
     """
     Process video input from either webcam or video file
@@ -274,6 +383,7 @@ def process_video_input(args, model, device):
     # Process frames
     print(f"Starting video processing from {source_name}...")
     output_file = os.path.join(f"{args.seq_name}.txt")
+    max_age = 100
 
     while cap.isOpened() and frame_idx < max_frames:
         # Read frame
@@ -413,62 +523,41 @@ def process_video_input(args, model, device):
                         device=device
                     )
 
-                    # Update matched tracks
-                    for track_idx, det_idx in assignments:
-                        # Get previous track
-                        prev_track = active_tracks[track_idx]
-                        track_id = prev_track['id']
+                    for track_idx in unmatched_tracks:
+                        old_track = active_tracks[track_idx]
 
-                        # Update with new detection
-                        box = all_boxes[det_idx].cpu().numpy()
-                        feature = all_reid_features[det_idx].detach().cpu()
-                        score = all_scores[det_idx].item()
-                        label = all_labels[det_idx].item()
+                        # Increment age and time since update
+                        old_track['age'] += 1
+                        old_track['time_since_update'] += 1
 
-                        # Calculate center point
-                        center = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]
+                        # Remove if too old
+                        if old_track['age'] <= max_age:
+                            current_frame_tracks.append(old_track)
+                            all_tracks[old_track['id']] = old_track
+                        # else: do not append = remove the track
 
-                        # Update track
-                        updated_track = {
-                            'id': track_id,
-                            'box': box,
-                            'score': score,
-                            'feature': feature,  # Use new feature
-                            'position': np.append(center, [0]),
-                            'age': prev_track['age'] + 1,
-                            'time_since_update': 0,
-                            'label': label
-                        }
-
-                        # Add to current frame and update global track storage
-                        current_frame_tracks.append(updated_track)
-                        all_tracks[track_id] = updated_track
-
-                    # Add new tracks for unmatched detections
+                    # --- Handle unmatched detections (create new tracks) ---
                     for det_idx in unmatched_detections:
                         box = all_boxes[det_idx].cpu().numpy()
                         feature = all_reid_features[det_idx].detach().cpu()
                         score = all_scores[det_idx].item()
                         label = all_labels[det_idx].item()
 
-                        # Calculate center point
                         center = [(box[0] + box[2]) / 2, (box[1] + box[3]) / 2]
 
-                        # Create new track
-                        track = {
+                        new_track = {
                             'id': next_track_id,
                             'box': box,
                             'score': score,
                             'feature': feature,
                             'position': np.append(center, [0]),
-                            'age': 1,
+                            'age': 0,
                             'time_since_update': 0,
                             'label': label
                         }
 
-                        # Add to current frame and global track storage
-                        current_frame_tracks.append(track)
-                        all_tracks[next_track_id] = track
+                        current_frame_tracks.append(new_track)
+                        all_tracks[next_track_id] = new_track
                         next_track_id += 1
 
                 # Update state for next frame
