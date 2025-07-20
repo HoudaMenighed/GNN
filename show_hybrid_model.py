@@ -32,7 +32,7 @@ def parse_args():
     parser.add_argument('--mot_classes', action='store_true', help='Show MOT Challenge categories (person, car, motorcycle, bicycle)')
     parser.add_argument('--class_ids', type=str, default='1,3,4,2', help='Comma-separated list of class IDs to track')
     parser.add_argument('--jijel', action='store_true', help='Use Jijel image sequence from data/jijel')
-    parser.add_argument('--resize', type=int, default=None, help='Resize images to this width (aspect ratio preserved)')
+    parser.add_argument('--resize', type=int, default=False, help='Resize images to this width (aspect ratio preserved)')
     parser.add_argument('--webcam', type=int, default=None, help='Camera index for webcam input (e.g., 0 for default camera)')
     parser.add_argument('--video', type=str, default=None, help='Path to video file for processing')
     parser.add_argument('--fps', type=int, default=30, help='FPS for webcam/video processing')
@@ -238,8 +238,8 @@ def process_video_input(args, model, device):
         display_width = args.resize
         display_height = int(frame_height * (display_width / frame_width))
     else:
-        display_width = int(frame_width * args.display_scale)
-        display_height = int(frame_height * args.display_scale)
+        display_width = int(frame_width)
+        display_height = int(frame_height)
     
     print(f"Display dimensions: {display_width}x{display_height}")
     
@@ -528,7 +528,7 @@ def process_video_input(args, model, device):
                 w = x2 - x1
                 h = y2 - y1
 
-                line = f"{frame_idx + 1},{track_id},{x1:.2f},{y1:.2f},{w:.2f},{h:.2f},{score:.2f},{label},1"
+                line = f"{frame_idx + 1},{track_id},{x1:.2f},{y1:.2f},{w:.2f},{h:.2f},-1,-1,-1,-1"
                 f.write(line + "\n")
         
         # Increment frame counter

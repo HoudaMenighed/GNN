@@ -259,7 +259,11 @@ def associate_detections_to_tracks(
             feat = t['feature']
             feat_tensor = feat if isinstance(feat, torch.Tensor) else torch.tensor(feat, device=device)
             prev_features_list.append(feat_tensor)
-            prev_boxes.append(t['box'])
+            box = t['box']
+            if isinstance(box, np.ndarray):
+                box = torch.tensor(box, dtype=torch.float32, device=device)
+            prev_boxes.append(box)
+
             track_ages.append(t.get('age', 0))
         except Exception as e:
             print(f"[Warning] Failed to process track {idx}: {e}")
@@ -350,12 +354,9 @@ def process_video_input(args, model, device):
     print(f"Video dimensions: {frame_width}x{frame_height}, FPS: {fps}")
 
     # Resize if requested
-    if args.resize:
-        display_width = args.resize
-        display_height = int(frame_height * (display_width / frame_width))
-    else:
-        display_width = int(frame_width * args.display_scale)
-        display_height = int(frame_height * args.display_scale)
+
+    display_width = int(frame_width)
+    display_height = int(frame_height)
 
     print(f"Display dimensions: {display_width}x{display_height}")
 
@@ -508,7 +509,6 @@ def process_video_input(args, model, device):
                             'time_since_update': 0,
                             'label': label
                         }
-                        print('--------------we are here--------------')
                         # Add to current frame and global track storage
                         current_frame_tracks.append(track)
                         all_tracks[next_track_id] = track
@@ -632,7 +632,7 @@ def process_video_input(args, model, device):
                 w = x2 - x1
                 h = y2 - y1
 
-                line = f"{frame_idx + 1},{track_id},{x1:.2f},{y1:.2f},{w:.2f},{h:.2f},{score:.2f},{label},1"
+                line = f"{frame_idx + 1},{track_id},{x1:.2f},{y1:.2f},{w:.2f},{h:.2f},-1,-1,-1,-1"
                 f.write(line + "\n")
 
         # Increment frame counter
