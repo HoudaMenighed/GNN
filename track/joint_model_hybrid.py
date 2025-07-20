@@ -27,7 +27,7 @@ class DetectionWithReID(nn.Module):
         self.feature_dim = feature_dim
         self.reid_dim = reid_dim
         
-        # ReID embedding for appearance feature extraction
+        # ReID embedding for appearance feature extraction from 256 to 512
         self.feature_projection = nn.Linear(256, feature_dim)
         self.reid_head = nn.Sequential(
             nn.Linear(feature_dim, reid_dim),
@@ -37,10 +37,10 @@ class DetectionWithReID(nn.Module):
         )
         
     def forward(self, images):
-        # Ensure the detector is in eval mode for inference
+        # Ensure the detector is in eval mode for inference so the NMS is applied
         self.detector.eval()
         
-        # Process the image with the detector
+        # Process the image with the detector, outputs : boxes, scores, labels
         with torch.no_grad():
             detector_outputs = self.detector(images)
         
@@ -54,7 +54,7 @@ class DetectionWithReID(nn.Module):
         
         for i, (boxes, scores, labels) in enumerate(zip(all_boxes, all_scores, all_labels)):
             # Apply a lower score threshold for more consistent detections
-            score_filter = scores >= 0.3
+            score_filter = scores >= 0.3 # keep only the detections where score >= 0.3
             
             if score_filter.sum() > 0:
                 # We have some detections above threshold
@@ -78,10 +78,10 @@ class DetectionWithReID(nn.Module):
                     # Project features
                     box_features_flat = self.feature_projection(box_features_flat)
                     
-                    # Get ReID embeddings
+                    # Get ReID embeddings (vector)
                     reid_features = self.reid_head(box_features_flat)
                     
-                    # L2 normalize features
+                    # L2 normalize features (0,1)
                     reid_features = F.normalize(reid_features, p=2, dim=1)
                     
                     filtered_reid_features.append(reid_features)
@@ -197,7 +197,7 @@ class GraphNN(nn.Module):
             node_features = self.feature_projection(node_features)
         
         # Initial node encoding
-        x = self.node_encoder(node_features)
+        x = self.node_encoder(node_features) # for enhanced features
         previous_x = x  # Store for skip connection
         
         # Initialize variables to avoid undefined references later
@@ -219,7 +219,7 @@ class GraphNN(nn.Module):
             
             # Identify temporal edges (connections between frames)
             # A temporal edge connects a node from the previous frame to a node in the current frame
-            is_temporal_edge = (src < num_prev_nodes) & (dst >= num_prev_nodes)
+            is_temporal_edge = (src < num_prev_nodes) & (dst >= num_prev_nodes) #src : previous object, dst :current object
             is_reverse_temporal = (src >= num_prev_nodes) & (dst < num_prev_nodes)
             temporal_edge_mask = is_temporal_edge | is_reverse_temporal
             
@@ -416,6 +416,7 @@ class SpatialAttentionModule(nn.Module):
         self.sigmoid = nn.Sigmoid()
         
         # CNN feature extractor for refined features
+        # Refines the attention-weighted features using two convolutional layers.)
         self.conv_layers = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1),
             nn.BatchNorm2d(in_channels),
@@ -462,7 +463,7 @@ class SpatialAttentionModule(nn.Module):
         Y = XC * MS  # Broadcast MS across all channels
         
         # Apply CNN layers for feature extraction
-        Y = self.conv_layers(Y)
+        Y = self.conv_layers(Y) #Refines the attention-weighted features using two convolutional layers.
         
         # Global pooling converts spatial features to a vector
         Y = self.global_avg_pool(Y)
@@ -569,6 +570,7 @@ class HybridDetectionTrackingModel(nn.Module):
                 scores = detector_output['scores']
                 labels = detector_output['labels']
                 reid_features = output['reid_features']
+                print('reid-features dim', reid_features.shape)
                 roi_features = output.get('roi_features', None)
                 
                 # Store results
@@ -590,7 +592,9 @@ class HybridDetectionTrackingModel(nn.Module):
                 # If we have ROI features, process through enhanced ReID
                 if len(all_roi_features) > 0 and i < len(all_roi_features):
                     roi_feats = all_roi_features[i]
-                    if roi_feats is not None and roi_feats.shape[0] > 0:
+                    if roi_feats is not None and roi_feats.shape[0] > 0: #<--- always return False (the detector never return the roi_features)
+                        print(roi_feats)
+                        print('roi features size :', roi_feats.shape)
                         # Process through enhanced ReID
                         enhanced_feats = self.enhanced_reid(roi_feats)
                         enhanced_reid_features.append(enhanced_feats)
@@ -601,6 +605,7 @@ class HybridDetectionTrackingModel(nn.Module):
                     # Process through metric learning component
                     metric_feats = self.metric_fc(reid_features)
                     normalized_feats = F.normalize(metric_feats, p=2, dim=1)
+                    print('normalized_feats dim', normalized_feats.shape)
                     enhanced_reid_features.append(normalized_feats)
         
         # If we have enhanced features, use them, otherwise use original
